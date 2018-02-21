@@ -68,6 +68,18 @@ include_once("./load_settings.php");
 
 
 echo "Checking modules.\n";
+
+        //force check installed data
+        $source=ROOT.'modules';
+        if ($dir = @opendir($source)) { 
+          while (($file = readdir($dir)) !== false) { 
+           if (Is_Dir($source."/".$file) && ($file!='.') && ($file!='..')) {
+            @unlink(ROOT."modules/".$file."/installed");
+           }
+          }
+         }
+         @unlink(ROOT."modules/control_modules/installed");
+
 // continue startup
 include_once(DIR_MODULES . "control_modules/control_modules.class.php");
 $ctl = new control_modules();
@@ -77,12 +89,48 @@ $ctl = new control_modules();
 echo "Clearing the cache.\n";
 SQLExec("TRUNCATE TABLE `cached_values`");
 
+if (defined('SEPARATE_HISTORY_STORAGE') && SEPARATE_HISTORY_STORAGE==1) {
+   // split data into multiple tables
+   $phistory_values = SQLSelect("SELECT VALUE_ID, COUNT(*) as TOTAL FROM phistory GROUP BY VALUE_ID");
+   $total = count($phistory_values);
+   for($i=0;$i<$total;$i++) {
+      $value_id=$phistory_values[$i]['VALUE_ID'];
+      $total_data=$phistory_values[$i]['TOTAL'];
+      DebMes("Processing data for value $value_id ($total_data) ... ");
+      echo "Processing data for value $value_id ($total_data) ... ";
+      $table_name = createHistoryTable($value_id);
+      moveDataFromMainHistoryToTable($value_id);
+      DebMes("Processing of $value_id finished.");
+      echo "OK\n";
+   }
+} else {
+  //combine data into single table
+   $data=SQLSelect("SHOW TABLES;");
+   $tables=array();
+   foreach($data as $v) {
+      foreach($v as $k=>$v2) {
+         $tables[]=$v2;
+      }
+   }
+   foreach($tables as $table) {
+      if (preg_match('/phistory_value_(\d+)/',$table,$m)) {
+         $value_id=$m[1];
+         echo "Processing table: $table ($value_id) ...\n";
+         DebMes("Processing data for value $value_id ($table) ... ");
+         moveDataFromTableToMainHistory($value_id);
+         DebMes("Processing of $value_id finished.");
+         echo "OK\n";
+      }
+   }
+}
 
 // 1 second sleep
 sleep(1);
 
 // getting list of /scripts/cycle_*.php files to run each in separate thread
 $cycles = array();
+
+$reboot_timer=0;
 
 if (is_dir("./scripts"))
 {
@@ -122,8 +170,8 @@ foreach ($cycles as $path)
       }
 
 
-      DebMes("Starting " . $path . " ... ");
-      echo "Starting " . $path . " ... ";
+      DebMes("Starting " . $path . " ... ",'threads');
+      echo "Starting " . $path . " ... \n";
 
       if ((preg_match("/_X/", $path)))
       {
@@ -171,78 +219,104 @@ if (!is_array($restart_threads))
 
 $last_restart=array();
 
+$last_cycles_control_check=time();
+
+$auto_restarts=array();
+$to_start=array();
+$to_stop=array();
+
 
 while (false !== ($result = $threads->iteration()))
 {
 
+   if ((time()-$last_cycles_control_check)>=5) {
+      $last_cycles_control_check=time();
 
-   $to_start=array();
-   $to_stop=array();
-   $to_restart=array();
-   $auto_restarts=array();
+      $auto_restarts=array();
+      $qry="1 AND (TITLE LIKE 'cycle%Run' OR TITLE LIKE 'cycle%Control')";
+      $cycles=SQLSelect("SELECT properties.* FROM properties WHERE $qry ORDER BY TITLE");
+      $total = count($cycles);
 
-   $qry="1 AND TITLE LIKE 'cycle%Run'";
-   $cycles=SQLSelect("SELECT properties.* FROM properties WHERE $qry ORDER BY TITLE");
-   $total = count($cycles);
-
-   for ($i = 0; $i < $total; $i++) {
-      $title = $cycles[$i]['TITLE'];
-      $title = preg_replace('/Run$/', '', $title);
-      $control=getGlobal($title.'Control');
-      $auto_restart=getGlobal($title.'AutoRestart');
-      if ($auto_restart) {
-        $auto_restarts[]=$title;
-      }
-      if ($control!='') {
-         if ($control=='stop') {
-            $to_stop[]=$title;
-         } elseif ($control=='start') {
-            $to_start[]=$title;
-         } elseif ($control=='restart') {
-            $to_stop[]=$title;
-            $to_start[]=$title;
+      $seen=array();
+      for ($i = 0; $i < $total; $i++) {
+         $title = $cycles[$i]['TITLE'];
+         $title = preg_replace('/Run$/', '', $title);
+         $title = preg_replace('/Control$/', '', $title);
+         if (isset($seen[$title])) {
+            continue;
          }
-       setGlobal($title.'Control','');
+         $seen[$title]=1;
+         $control=getGlobal($title.'Control');
+         $auto_restart=getGlobal($title.'AutoRestart');
+         if ($auto_restart) {
+            $auto_restarts[]=$title;
+         }
+         if ($control!='') {
+            DebMes("Got control command '$control' for ".$title,'threads');
+            if ($control=='stop') {
+               $to_stop[$title]=time();
+            } elseif ($control=='start') {
+               $to_start[$title]=time();
+            } elseif ($control=='restart') {
+               $to_stop[$title]=time();
+               $to_start[$title]=time()+5;
+            }
+            setGlobal($title.'Control','');
+         }
+
       }
 
    }
 
-   $some_closed=0;
    $is_running=array();
    foreach($threads->commandLines as $id=>$cmd) {
       if (preg_match('/(cycle_.+?)\.php/is',$cmd,$m)) {
          $title=$m[1];
-         if (in_array($title,$to_stop) || in_array($title,$to_restart)) {
-            DebMes("Closing service ".$title." (id: $id)");
-            $threads->closeThread($id);
-            $some_closed=1;
-         } else {
-            $is_running[]=$title;
+         $is_running[$title]=$id;
+      }
+   }
+
+   if (file_exists(ROOT.'reboot')) {
+      if (!$reboot_timer) {
+         $reboot_timer=time();
+      } elseif ((time()-$reboot_timer)>10) {
+         $reboot_timer=0;
+         //force close all running threads
+         DebMes("Force closing all running services.",'threads');
+         $to_start = array();
+         $restart_threads = array();
+         foreach($is_running as $k=>$v) {
+            $to_stop[$k]=time();
          }
       }
    }
 
-   if ($some_closed) {
-      sleep(3);
-   }
-
-   foreach($to_start as $title) {
-      if (!in_array($title,$is_running)) {
-         $cmd='./scripts/'.$title.'.php';
-         DebMes("Starting service ".$title.' ('.$cmd.')');
-         $pipe_id = $threads->newThread($cmd);
+   foreach($to_stop as $title=>$tm) {
+      if ($tm<=time()) {
+         if (isset($is_running[$title])) {
+            $id =$is_running[$title];
+            DebMes("Force closing service ".$title." (id: ".$id.")",'threads');
+            $threads->closeThread($id);
+         }
+         unset($to_stop[$title]);
       }
    }
 
-/*
-   setGlobal('runningCycles',serialize($threads->commandLines));
-   setGlobal('runningToStop',serialize($to_stop));
-   setGlobal('runningToStart',serialize($to_start));
-*/
+   foreach($to_start as $title=>$tm) {
+      if ($tm<=time()) {
+         if (!isset($is_running[$title])) {
+            $cmd='./scripts/'.$title.'.php';
+            DebMes("Starting service ".$title.' ('.$cmd.')','threads');
+            $pipe_id = $threads->newThread($cmd);
+            $is_running[$title]=$pipe_id;
+         }
+         unset($to_stop[$title]);
+         unset($to_start[$title]);
+      }
+   }
 
    if (!empty($result))
    {
-      //echo "Res: " . $result . PHP_EOL . "---------------------" . PHP_EOL;
       $closePattern = '/THREAD CLOSED:.+?(\.\/scripts\/cycle\_.+?\.php)/is';
       if (preg_match_all($closePattern, $result, $matches) && !file_exists('./reboot'))
       {
@@ -250,37 +324,36 @@ while (false !== ($result = $threads->iteration()))
          for ($im = 0; $im < $total_m; $im++)
          {
             $closed_thread = $matches[1][$im];
+            $cycle_title = '';
             $need_restart=0;
             if (preg_match('/(cycle_.+?)\.php/is',$closed_thread,$m)) {
-               $title=$m[1];
-               setGlobal($title.'Run','');
-               if (in_array($title,$auto_restarts)) {
+               $cycle_title=$m[1];
+               DebMes("Thread closed: " . $cycle_title,'threads');
+               unset($to_stop[$cycle_title]);
+               setGlobal($cycle_title.'Run','');
+               if (in_array($cycle_title,$auto_restarts)) {
                   $need_restart=1;
                }
             }
             foreach ($restart_threads as $item)
             {
-               if (preg_match('/' . $item . '/is', $closed_thread) && (!$last_restart[$closed_thread] || (time()-$last_restart[$closed_thread])>30))
-               {
-                  //restart
+               if (preg_match('/' . $item . '/is', $closed_thread)) {
                   $need_restart=1;
-                  $last_restart[$closed_thread]=time();
                }
             }
-            if ($need_restart) {
-               DebMes("AUTO-RECOVERY: " . $closed_thread);
+            if ($need_restart && $cycle_title) {
+               DebMes("AUTO-RECOVERY: " . $closed_thread,'threads');
                if (!preg_match('/websockets/is', $closed_thread)) {
-                  registerError('cycle_stop', $closed_thread);
+                  registerError('cycle_stop', $closed_thread."\n".$result);
                }
-               $pipe_id = $threads->newThread($closed_thread);
+               $to_start[$cycle_title]=time()+5;
+               //$pipe_id = $threads->newThread($closed_thread);
             }
          }
       }
    }
 }
 
-
  unlink('./reboot');
-
  // closing database connection
  $db->Disconnect();

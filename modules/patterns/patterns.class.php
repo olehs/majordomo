@@ -376,7 +376,7 @@ function usual(&$out) {
        $rec['DETAILS']=$url;
        $rec['ID']=SQLInsert('events', $rec);
 
-       postToWebSocket('TERMINAL_EVENT', $rec, 'PostEvent');
+       postToWebSocketQueue('TERMINAL_EVENT', $rec, 'PostEvent');
 
       }
      }
@@ -457,13 +457,13 @@ function usual(&$out) {
   }
 
 
- function runPatternAction($id, $matches=array(), $original='', $from_user_id) {
+ function runPatternAction($id, $matches=array(), $original = '', $from_user_id = 0) {
   $rec=SQLSelectOne("SELECT * FROM patterns WHERE ID='".(int)$id."'");   
 
      global $noPatternMode;
      $noPatternMode=1;
      if ($rec['SCRIPT_ID']) {
-      runScript($rec['SCRIPT_ID'], $matches);
+      runScriptSafe($rec['SCRIPT_ID'], $matches);
      } elseif ($rec['SCRIPT']) {
 
                   try {

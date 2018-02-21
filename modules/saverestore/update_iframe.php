@@ -21,6 +21,7 @@ global $with_extensions;
 echo "<html>";
 echo "<body>";
 
+
 $out=array();
 
 if ($backup) {
@@ -47,12 +48,20 @@ if ($res) {
 
  $folder='majordomo-master';
 
+     $basename=basename($sv->url);
+     if ($basename!='master.tar.gz') {
+      $basename=str_replace('.tar.gz', '', $basename);
+      $folder=str_replace('master', $basename, $folder);
+     }
+
+
  $res=$sv->upload($out, 1);
 
  if ($res) {
 
   $sv->echonow("Removing temporary files ... ");
   $sv->removeTree(ROOT.'saverestore/temp');
+  @unlink(ROOT."modules/control_modules/installed");
   $sv->echonow(" OK<br/> ", 'green');
 
   $sv->echonow("<b>Main system updated!</b><br/>", 'green');

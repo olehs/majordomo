@@ -206,6 +206,23 @@ function admin(&$out) {
 */
 function usual(&$out) {
 
+ if ($this->ajax) {
+
+  header("HTTP/1.0: 200 OK\n");
+  header('Content-Type: text/html; charset=utf-8');
+
+  global $op;
+  global $id;
+  $res=array();
+  if ($op=='get_object') {
+   $res=$this->processObject($id);
+  }
+  echo json_encode($res);
+
+  global $db;$db->disconnect();
+  exit;
+ }
+
  if ($this->class) {
   $objects=getObjectsByClass($this->class);
   if (!$this->code) {
@@ -280,6 +297,10 @@ function usual(&$out) {
    $this->id=$rec['ID'];
    $this->object_title=$rec['TITLE'];
    $this->class_id=$rec['CLASS_ID'];
+   if ($this->class_id) {
+    $class_rec=SQLSelectOne("SELECT ID,TITLE FROM classes WHERE ID=".$this->class_id);
+    $this->class_title=$class_rec['TITLE'];
+   }
    $this->description=$rec['DESCRIPTION'];
    $this->location_id=$rec['LOCATION_ID'];
    //$this->keep_history=$rec['KEEP_HISTORY'];
@@ -425,9 +446,38 @@ function usual(&$out) {
   
  }
 
-
  function callClassMethod($name, $params=0) {
   $this->callMethod($name, $params, 1);
+ }
+
+ function callMethodSafe($name,$params = 0) {
+  $current_call=$this->object_title.'.'.$name;
+  $call_stack=array();
+  if (isset($_GET['m_c_s']) && is_array($_GET['m_c_s'])) {
+   $call_stack = $_GET['m_c_s'];
+  }
+
+  if (in_array($current_call,$call_stack)) {
+   $call_stack[]=$current_call;
+   DebMes("Warning: cross-linked call of ".$current_call."\nlog:\n".implode(" -> \n",$call_stack));
+   return 0;
+  }
+
+  $call_stack[]=$current_call;
+  $data=array(
+   'object'=>$this->object_title,
+      'op'=>'m',
+      'm'=>$name,
+      'm_c_s'=>$call_stack
+  );
+  $url=BASE_URL.'/objects/?'.http_build_query($data);
+  if (is_array($params)) {
+   foreach($params as $k=>$v) {
+    $url.='&'.$k.'='.urlencode($v);
+   }
+  }
+  $result = getURLBackground($url,0);
+  return $result;
  }
 
 /**
@@ -437,18 +487,24 @@ function usual(&$out) {
 *
 * @access public
 */
- function callMethod($name, $params=0, $parent=0) {
+ function callMethod($name, $params=0, $parentClassId=0) {
 
+   if (!$parentClassId) {
+    verbose_log("Method [".$this->object_title.".$name] (".(is_array($params)?json_encode($params):'').")");
+   } else {
+    verbose_log("Class method [".$this->class_title.'/'.$this->object_title.".$name] (".(is_array($params)?json_encode($params):'').")");
+   }
   startMeasure('callMethod');
 
   $original_method_name=$this->object_title.'.'.$name;
 
   startMeasure('callMethod ('.$original_method_name.')');
 
- if (!$parent) {
+ if (!$parentClassId) {
   $id=$this->getMethodByName($name, $this->class_id, $this->id);
+  $parentClassId = $this->class_id;
  } else {
-  $id=$this->getMethodByName($name, $this->class_id, 0);
+  $id=$this->getMethodByName($name, $parentClassId, 0);
  }
 
   if ($id) {
@@ -463,12 +519,23 @@ function usual(&$out) {
     $params['ORIGINAL_OBJECT_TITLE']=$this->object_title;
    }
    if ($params) {
-    $method['EXECUTED_PARAMS']=serialize($params);
+    $saved_params=$params;
+    unset($saved_params['m_c_s']);
+    $method['EXECUTED_PARAMS']=json_encode($saved_params);
+    if (strlen($method['EXECUTED_PARAMS'])>250) {
+     $method['EXECUTED_PARAMS']=substr($method['EXECUTED_PARAMS'],0,250);
+    }
    }
    SQLUpdate('methods', $method);
 
    if ($method['OBJECT_ID'] && $method['CALL_PARENT']==1) {
-    $this->callMethod($name, $params, 1);
+    // call class method
+    $parent_success = $this->callMethod($name, $params, $this->class_id);
+   } elseif ($method['CALL_PARENT']==1) {
+    $parentClass=SQLSelectOne("SELECT ID, PARENT_ID FROM classes WHERE ID=".(int)$parentClassId);
+    if ($parentClass['PARENT_ID']) {
+     $parent_success = $this->callMethod($name, $params, $parentClass['PARENT_ID']);
+    }
    }
 
    if ($method['SCRIPT_ID']) {
@@ -476,7 +543,7 @@ function usual(&$out) {
     $script=SQLSelectOne("SELECT * FROM scripts WHERE ID='".$method['SCRIPT_ID']."'");
     $code=$script['CODE'];
    */
-    runScript($method['SCRIPT_ID']);
+    runScriptSafe($method['SCRIPT_ID']);
    } else {
     $code=$method['CODE'];
    }
@@ -525,7 +592,12 @@ function usual(&$out) {
    endMeasure('callMethod', 1);
    endMeasure('callMethod ('.$original_method_name.')', 1);
    if ($method['OBJECT_ID'] && $method['CALL_PARENT']==2) {
-    $parent_success=$this->callMethod($name, $params, 1);
+    $parent_success = $this->callMethod($name, $params, $this->class_id);
+   } elseif ($method['CALL_PARENT']==2) {
+    $parentClass=SQLSelectOne("SELECT ID, PARENT_ID FROM classes WHERE ID=".(int)$parentClassId);
+    if ($parentClass['PARENT_ID']) {
+     $parent_success = $this->callMethod($name, $params, $parentClass['PARENT_ID']);
+    }
    } else {
     $parent_success=true;
    }
@@ -582,6 +654,9 @@ function usual(&$out) {
 * @access public
 */
  function getProperty($property) {
+
+  $property = trim($property);
+
   if ($this->object_title) {
    $value=SQLSelectOne("SELECT VALUE FROM pvalues WHERE PROPERTY_NAME = '".DBSafe($this->object_title.'.'.$property)."'");
    if (isset($value['VALUE'])) {
@@ -599,7 +674,11 @@ function usual(&$out) {
    if ($property=='object_title') {
     return $this->object_title;
    } elseif ($property=='object_description') {
-    return $this->object_description;
+    return $this->description;
+   } elseif ($property=='object_id') {
+    return $this->id;
+   } elseif ($property=='class_title') {
+    return $this->class_title;
    }
   }
 
@@ -630,8 +709,13 @@ function usual(&$out) {
 */
  function setProperty($property, $value, $no_linked=0, $source='') {
 
+  if (!preg_match('/cycle/is',$property) && function_exists('verbose_log')) {
+   verbose_log('Property ['.$this->object_title.'.'.$property.'] set to \''.$value.'\'');
+  }
   startMeasure('setProperty');
   startMeasure('setProperty ('.$property.')');
+
+  $property = trim($property);
 
   if (is_null($value)) {
    $value='';
@@ -661,18 +745,33 @@ function usual(&$out) {
     }
    }
    if ($save) {
-    $today_file=ROOT.'debmes/'.date('Y-m-d').'.data';
+    if ($this->location_id) {
+     $location=current(SQLSelectOne("SELECT TITLE FROM locations WHERE ID=".(int)$this->location_id));
+    } else {
+     $location='';
+    }
+
+
+   if (defined('LOG_DIRECTORY') && LOG_DIRECTORY!='') {
+    $path=LOG_DIRECTORY;
+   } else {
+    $path = ROOT . 'debmes';
+   }
+
+    $today_file=$path . '/'.date('Y-m-d').'.data';
     $f=fopen($today_file, "a+");
     if ($f) {
                 fputs($f, date("Y-m-d H:i:s"));
-                fputs($f, "\t".$this->object_title.'.'.$property."\t".trim($value)."\t".$source."\n");
+                fputs($f, "\t".$this->object_title.'.'.$property."\t".trim($value)."\t".trim($source)."\t".trim($location)."\n");
                 fclose($f);
                 @chmod($today_file, 0666);
     }   
    }
   }
 
+  startMeasure('getPropertyByName');
   $id=$this->getPropertyByName($property, $this->class_id, $this->id);
+  endMeasure('getPropertyByName');
   $old_value='';
 
   $cached_name='MJD:'.$this->object_title.'.'.$property;
@@ -680,8 +779,48 @@ function usual(&$out) {
   startMeasure('setproperty_update');
   if ($id) {
    $prop=SQLSelectOne("SELECT * FROM properties WHERE ID='".$id."'");
+   startMeasure('setproperty_update_getvalue');
    $v=SQLSelectOne("SELECT * FROM pvalues WHERE PROPERTY_ID='".(int)$id."' AND OBJECT_ID='".(int)$this->id."'");
+   endMeasure('setproperty_update_getvalue');
    $old_value=$v['VALUE'];
+
+   if ($prop['DATA_TYPE']==5 && $value!=$old_value) { // image
+    $path_parts=pathinfo($value);
+    $extension=strtolower($path_parts['extension']);
+    if ($extension!='jpg' && $extension!='jpeg' && $extension!='png'  && $extension!='gif') {
+     $extension='jpg';
+    }
+    $image_file_name=date('Ymd_His').'.'.$extension;
+    if (preg_match('/^http.+/',$value)) {
+     $image_data=getURL($value);
+     @mkdir(ROOT.'cms/images/'.$prop['ID'],0777);
+     SaveFile(ROOT.'cms/images/'.$prop['ID'].'/'.$image_file_name,$image_data);
+     $value=$prop['ID'].'/'.$image_file_name;
+    } elseif (file_exists($value)) {
+     @mkdir(ROOT.'cms/images/'.$prop['ID'],0777);
+     copyFile($value,ROOT.'cms/images/'.$prop['ID'].'/'.$image_file_name);
+     $value=$prop['ID'].'/'.$image_file_name;
+    } else {
+     $value = '';
+    }
+    if ($value!='' && file_exists(ROOT.'cms/images/'.$value)) {
+     $lst=GetImageSize(ROOT.'cms/images/'.$value);
+     //$image_width=$lst[0];
+     //$image_height=$lst[1];
+     $image_format=$lst[2];
+     if (!$image_format) {
+      @unlink(ROOT.'cms/images/'.$value);
+      $value = '';
+     }
+    } else {
+     $value = '';
+    }
+    if ($value!='' && $old_value!='' && !$prop['KEEP_HISTORY'] && file_exists(ROOT.'cms/images/'.$old_value)) {
+     @unlink(ROOT.'cms/images/'.$old_value);
+    }
+    if ($value=='') $value=$old_value;
+   }
+
    $v['VALUE']=$value.'';
    $v['SOURCE']=$source.'';
    if ($v['ID']) {
@@ -718,10 +857,10 @@ function usual(&$out) {
 
   saveToCache($cached_name, $value);
 
-  if (function_exists('postToWebSocket')) {
-   startMeasure('setproperty_postwebsocket');
-   postToWebSocket($this->object_title.'.'.$property, $value);
-   endMeasure('setproperty_postwebsocket');
+  if (function_exists('postToWebSocketQueue')) {
+   startMeasure('setproperty_postwebsocketqueue');
+   postToWebSocketQueue($this->object_title.'.'.$property, $value);
+   endMeasure('setproperty_postwebsocketqueue');
   }
 
   /*
@@ -751,7 +890,8 @@ function usual(&$out) {
     $params['NEW_VALUE']=(string)$value;
     $params['OLD_VALUE']=(string)$old_value;
     $params['SOURCE']=(string)$source;
-    $this->callMethod($prop['ONCHANGE'], $params);
+    //$this->callMethod($prop['ONCHANGE'], $params);
+    $this->callMethodSafe($prop['ONCHANGE'], $params);
     unset($property_linked_history[$property][$prop['ONCHANGE']]);
    }
   }
@@ -804,6 +944,39 @@ function usual(&$out) {
 
  }
 
+ function getWatchedProperties($objects) {
+  $properties=array();
+  $ids=explode(',',$objects);
+  include_once(DIR_MODULES.'classes/classes.class.php');
+  $cl=new classes();
+
+  foreach($ids as $object_id) {
+   $this->loadObject($object_id);
+   $props=$cl->getParentProperties($this->class_id, '', 1);
+   $my_props=SQLSelect("SELECT * FROM properties WHERE OBJECT_ID='".(int)$object_id."'");
+   if ($my_props[0]['ID']) {
+    foreach($my_props as $p) {
+     $props[]=$p;
+    }
+   }
+   if (is_array($props)) {
+    foreach($props as $k=>$v) {
+     if (substr($v['TITLE'],0,1)=='_') continue;
+     $properties[]=array('PROPERTY'=>mb_strtolower($this->object_title.'.'.$v['TITLE'], 'UTF-8'), 'OBJECT_ID'=>$object_id);
+    }
+   }
+  }
+  return $properties;
+ }
+
+ function processObject($object_id) {
+  $object_rec=SQLSelectOne("SELECT * FROM objects WHERE ID=".(int)$object_id);
+  $result=array('HTML'=>'','OBJECT_ID'=>$object_rec['ID']);
+  $template=getObjectClassTemplate($object_rec['TITLE']);
+  $result['HTML']=processTitle($template,$this);
+  return $result;
+ }
+
 /**
 * Install
 *
@@ -842,6 +1015,16 @@ function usual(&$out) {
                 PRIMARY KEY (`KEYWORD`)
                ) ENGINE = MEMORY DEFAULT CHARSET=utf8;";
   SQLExec($sqlQuery);
+
+  $sqlQuery = "CREATE TABLE IF NOT EXISTS `cached_ws`
+               (`PROPERTY`   char(100) NOT NULL,
+                `DATAVALUE` varchar(20000) NOT NULL,
+                `POST_ACTION`   char(100) NOT NULL,
+                `ADDED`    datetime  NOT NULL,
+                PRIMARY KEY (`PROPERTY`)
+               ) ENGINE = MEMORY DEFAULT CHARSET=utf8;";
+  SQLExec($sqlQuery);
+
   //echo ("Executing $sqlQuery\n");
 
 /*

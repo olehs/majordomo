@@ -512,17 +512,28 @@ function setLocalTime($now_date, $diff = 0)
  */
 function DebMes($errorMessage, $logLevel = "debug")
 {
+
+   if (defined('LOG_DIRECTORY') && LOG_DIRECTORY!='') {
+    $path=LOG_DIRECTORY;
+   } else {
+    $path = ROOT . 'debmes';
+   }
+
    // DEBUG MESSAGE LOG
-   if (!is_dir(ROOT . 'debmes'))
+   if (!is_dir($path))
    {
-      mkdir(ROOT . 'debmes', 0777);
+      mkdir($path, 0777);
    }
 
-   if (is_array($errorMessage)) {
-      $errorMessage='Array: '.serialize($errorMessage);
+   if (is_array($errorMessage) || is_object($errorMessage)) {
+      $errorMessage=json_encode($errorMessage, JSON_PRETTY_PRINT);
    }
 
-   $today_file=ROOT.'debmes/'.date('Y-m-d').'.log';
+   if ($logLevel!='debug') {
+      $today_file=$path.'/'.date('Y-m-d').'_'.$logLevel.'.log';
+   } else {
+      $today_file=$path.'/'.date('Y-m-d').'.log';
+   }
    $f=fopen($today_file, "a+");
    if ($f) {
                 $tmp=explode(' ', microtime());
@@ -531,44 +542,6 @@ function DebMes($errorMessage, $logLevel = "debug")
                 fclose($f);
                 @chmod($today_file, 0666);
    }
-
-   /*
-   if (!file_exists(ROOT . 'debmes/' . date('Y-m-d') . '.log'))
-   {
-      SaveFile(ROOT . 'debmes/' . date('Y-m-d') . '.log', "Added " . date('Y-m-d H:i:s' . "\n"));
-   }
-
-   $log = Logger::getRootLogger();
-
-   if (defined('SETTINGS_LOGGER_DESTINATION'))
-   {
-      $errorDestination = strtolower(SETTINGS_LOGGER_DESTINATION);
-
-      if ($errorDestination == "database") $log = Logger::getLogger('dblog');
-      if ($errorDestination == "both") $log     = Logger::getLogger('db_and_file');
-   }
-
-   switch ($logLevel)
-   {
-      case "trace":
-         $log->trace($errorMessage);
-         break;
-      case "fatal":
-         $log->fatal($errorMessage);
-         break;
-      case "error":
-         $log->error($errorMessage);
-         break;
-      case "warn":
-         $log->warn($errorMessage);
-         break;
-      case "info":
-         $log->info($errorMessage);
-         break;
-      default:
-         $log->debug($errorMessage);
-   }
-   */
 }
 
 /**

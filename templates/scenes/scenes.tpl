@@ -202,10 +202,17 @@ $.fn.customContextMenu = function(callBack){
          EvalSound('click_sound');
          {/if}
 
-
         {foreach $RESULT as $SCENE}
         {foreach $SCENE.ALL_ELEMENTS as $ELEMENT}
         {foreach $ELEMENT.STATES as $STATE}
+
+
+            {if $ELEMENT.TYPE=="img"}
+            if (id=='{$STATE.ID}') {
+                $('#state_{$STATE.ID}').hide();
+                setTimeout("$('#state_{$STATE.ID}').show();", 150);
+            }
+            {/if}
 
          {if $ELEMENT.TYPE=="button"}
          if (id=='{$STATE.ID}') {
@@ -485,6 +492,7 @@ $.fn.customContextMenu = function(callBack){
 
                 $(document).ready(function(){
                 {if $TOTAL_SCENES=="1"}
+
                  {if $DRAGGABLE=="1"}
                     $(".draggable" ).draggable({ cursor: "move", snap: true , snapTolerance: 5, grid: [5,5],
                         stop: function(e, ui) {
@@ -540,18 +548,36 @@ $.fn.customContextMenu = function(callBack){
                   }
                  }
                  {/if}
+                    {if $SCENE_AUTO_SCALE=="1" && $DRAGGABLE!="1"}
+                    setTimeout('sceneZoom();',2000);
+                    $(window).on('resize', function(){
+                        sceneZoom();
+                    });
+                    {/if}
                 {/if}
                  
                  checkAllStates();
 
-                });     
+
+
+
+
+
+                });
+
+
+            function sceneZoom() {
+                zoom = $(window).width()/$("#slider").width()*100;
+                document.body.style.zoom = zoom+"%"
+            }
 
 
         </script>
 
 
 
-<table  border="0" align="center"{if $TOTAL_SCENES=="1"} width="100%"{/if} cellpadding="0" cellspacing="0">
+<div id="scenes_body">
+<table  border="0" cellpadding="0" cellspacing="0">
  <tr>
   <td valign="top">
 <div style="{if $TOTAL_SCENES!="1"}width:{$smarty.const.SETTINGS_SCENES_WIDTH}px;{/if};position:relative;">
@@ -747,6 +773,7 @@ function onDocumentMouseDown( event ) {
 </td>
  </tr>
 </table>
+</div>
 
 {if $DRAGGABLE=="1"}
 <div id='contextMenuDiv' style="display:none;width:100px;height:20px;background-color:white;position:absolute;border: 1px solid black;z-index:10000;top:200px;left:300px;padding:10px;text-align:center"><a href="#" onClick="stateClickedEdit('new');return false;">{$smarty.const.LANG_ADD}</a></div>

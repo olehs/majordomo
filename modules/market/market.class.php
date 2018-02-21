@@ -139,7 +139,35 @@ function admin(&$out) {
  }
 
 
- $data_url='http://connect.smartliving.ru/market/?lang='.SETTINGS_SITE_LANGUAGE;
+ $serial = gg('Serial');
+    if (!$serial || $serial=='0') {
+        $serial = '';
+        if (IsWindowsOS()) {
+            $data = exec('vol c:');
+            if (preg_match('/[\w]+\-[\w]+/',$data,$m)) {
+                $serial=strtolower($m[0]);
+            }
+        } else {
+            $data=trim(exec("cat /proc/cpuinfo | grep Serial | cut -d '':'' -f 2"));
+            $serial=ltrim($data,'0');
+        }
+        if (!$serial) {
+            $serial = uniqid('uniq');
+        }
+        sg('Serial',$serial);
+    }
+
+    if (IsWindowsOS()) {
+        $os = 'Windows';
+    } else {
+        $os=trim(exec("uname -a"));
+        if (!$os) {
+            $os = 'Linux';
+        }
+    }
+    $locale = $_SERVER['HTTP_ACCEPT_LANGUAGE'];
+
+ $data_url='http://connect.smartliving.ru/market/?lang='.SETTINGS_SITE_LANGUAGE."&serial=".urlencode($serial)."&locale=".urlencode($locale)."&os=".urlencode($os);
 
  global $err_msg;
  if ($err_msg) {
@@ -169,6 +197,9 @@ function admin(&$out) {
  }
 
  $result=getURL($data_url, 120);
+ if (!$result) {
+  $result=getURL($data_url, 0);
+ }
  $data=json_decode($result);
  if (!$data->PLUGINS) {
   $out['ERR']=1;
@@ -184,7 +215,8 @@ function admin(&$out) {
  if (!is_array($names)) {
   $names=array();
  }
-
+ $cat = array();
+ $cat_id = -1;
  for($i=0;$i<$total;$i++) {
   $rec=(array)$data->PLUGINS[$i];
   if (is_dir(ROOT.'modules/'.$rec['MODULE_NAME'])) {
@@ -198,26 +230,31 @@ function admin(&$out) {
   }
 
    if ($rec['CATEGORY']!=$old_category) {
-    $rec['NEW_CATEGORY']=1;
-    $old_category=$rec['CATEGORY'];
+       $cat[] = array();
+       ++$cat_id;
+       $cat[$cat_id]['NAME'] = $rec['CATEGORY'];
+       $cat[$cat_id]['CATEGORY_ID'] = $rec['CATEGORY_ID'];
+       $old_category=$rec['CATEGORY'];
    }
 
   //if ($rec['MODULE_NAME']==$name) {
-   unset($rec['LATEST_VERSION']);
+   //unset($rec['LATEST_VERSION']);
 
-   if (preg_match('/github\.com/is', $rec['REPOSITORY_URL']) && ($rec['EXISTS'] || $rec['MODULE_NAME']==$name)) {
-    $git_url=str_replace('archive/master.tar.gz', 'commits/master.atom', $rec['REPOSITORY_URL']);
-    $github_feed=getURL($git_url, 5*60);
-    @$tmp=GetXMLTree($github_feed);
-    @$items_data=XMLTreeToArray($tmp);
-    @$items=$items_data['feed']['entry'];
-    if (is_array($items)) {
-     $latest_item=$items[0];
-     //print_r($latest_item);exit;
-     $updated=strtotime($latest_item['updated']['textvalue']);
-     $rec['LATEST_VERSION']=date('Y-m-d H:i:s', $updated);
-     $rec['LATEST_VERSION_COMMENT']=$latest_item['title']['textvalue'];
-     $rec['LATEST_VERSION_URL']=$latest_item['link']['href'];
+   if (!isset($rec['LATEST_VERSION_URL'])) {
+    if (preg_match('/github\.com/is', $rec['REPOSITORY_URL']) && ($rec['EXISTS'] || $rec['MODULE_NAME']==$name)) {
+     $git_url=str_replace('archive/master.tar.gz', 'commits/master.atom', $rec['REPOSITORY_URL']);
+     $github_feed=getURL($git_url, 5*60);
+     @$tmp=GetXMLTree($github_feed);
+     @$items_data=XMLTreeToArray($tmp);
+     @$items=$items_data['feed']['entry'];
+     if (is_array($items)) {
+      $latest_item=$items[0];
+      //print_r($latest_item);exit;
+      $updated=strtotime($latest_item['updated']['textvalue']);
+      $rec['LATEST_VERSION']=date('Y-m-d H:i:s', $updated);
+      $rec['LATEST_VERSION_COMMENT']=$latest_item['title']['textvalue'];
+      $rec['LATEST_VERSION_URL']=$latest_item['link']['href'];
+     }
     }
    }
 
@@ -228,17 +265,28 @@ function admin(&$out) {
     $this->version=$rec['LATEST_VERSION'];
    }
 
-  //}
   if ($rec['EXISTS']) {
    $this->can_be_updated[]=array('NAME'=>$rec['MODULE_NAME'], 'URL'=>$rec['REPOSITORY_URL'], 'VERSION'=>$rec['LATEST_VERSION']);
   }
   if (in_array($rec['MODULE_NAME'], $names)) {
    $this->selected_plugins[]=array('NAME'=>$rec['MODULE_NAME'], 'URL'=>$rec['REPOSITORY_URL'], 'VERSION'=>$rec['LATEST_VERSION']);
   }
-
-  $out['PLUGINS'][]=$rec;
+  if ($rec['EXISTS'] && $rec['INSTALLED_VERSION']!=$rec['LATEST_VERSION']) {
+      $cat[$cat_id]['NEW_VERSION'] = 1;
+  }
+  $cat[$cat_id]['PLUGINS'][]=$rec;
  }
+ $out['CATEGORY'] = $cat;
 
+ if ($this->ajax && $_GET['op']=='check_updates') {
+     $total = count($this->can_be_updated);
+     if ($total > 0) {
+         echo "1";
+     } else {
+         echo "0";
+     }
+     exit;
+ }
 
  if ($this->mode=='install_multiple') {
   $this->updateAll($this->selected_plugins);

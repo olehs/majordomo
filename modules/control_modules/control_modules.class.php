@@ -181,11 +181,25 @@ function install($parent_name = "")
 {
    parent::install($parent_name);
 
+   global $db;
+ if (!is_object($db) || !$db->connected) {
+  return false;
+ }
+
    $this->getModulesList();
 
    $lst    = $this->modules;
+
+   $prelist=array('settings','objects', 'devices');
+   $prelist=array_reverse($prelist);
+   foreach($prelist as $v) {
+    $rec=array('FILENAME'=>$v);
+    array_unshift($lst, $rec);
+   }
+
    $lstCnt = count($lst);
-   $code   = "";
+
+   SQLExec("ALTER TABLE `project_modules` CHANGE `ID` `ID` INT( 10 ) UNSIGNED NOT NULL AUTO_INCREMENT");
 
    for ($i = 0; $i < $lstCnt; $i++)
    {
@@ -222,7 +236,7 @@ function install($parent_name = "")
    project_modules: DATA text
    project_modules: HIDDEN int(3)  DEFAULT '0' NOT NULL
    project_modules: PRIORITY int(10)  DEFAULT '0' NOT NULL
-   project_modules: ADDED timestamp(14)
+   project_modules: ADDED timestamp
 
    ignore_updates: ID tinyint(3) unsigned NOT NULL auto_increment
    ignore_updates: NAME varchar(50)  DEFAULT '' NOT NULL

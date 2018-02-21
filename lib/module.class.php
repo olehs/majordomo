@@ -540,8 +540,10 @@ class module
             SQLExec($sql);
 
             $result = SQLGetFields($table);
-            foreach($result as $row) {
-             $tbl_fields[$table][$row['Field']]=1;
+            if (is_array($result)) {
+               foreach($result as $row) {
+                  $tbl_fields[$table][$row['Field']]=1;
+               }
             }
 
          }
@@ -651,6 +653,15 @@ class module
 
       $session->save();
       $db->Disconnect();
+
+      if ($_GET['part_load']) {
+       $res=array();
+       $res['CONTENT']='';
+       $res['NEED_RELOAD']=1;
+       $res['REDIRECT']=$url;
+       echo json_encode($res);
+       exit;
+      }
 
       if (!headers_sent())
       {
